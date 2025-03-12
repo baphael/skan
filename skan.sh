@@ -6,7 +6,7 @@ TMP_FILE="./tmp-skan"
 
 echo -n "Check privileges... "
 if ! (( $(id -u) )); then
-	echo KO
+    echo KO
     echo "This script should NOT be executed as superuser."
     exit 1
 fi
@@ -22,29 +22,30 @@ fi
 echo OK
 
 function usage() {
-	SELF="$(basename ${0})"
-	cat <<EOF
+    SELF="$(basename ${0})"
+    cat <<EOF
 
 Description: Retrieves hostname, IP addresses and listening ports (TCP/UDP) for each SSH-available hosts of a given CIDR.
 
-Usage:	"${SELF}" CIDR
-	Press ^C [CTRL+c] to stop
+Usage: "${SELF}" [-t|--timeout SECONDS] [-o|--output FILE] [-i|--identity FILE] CIDR
+    Press ^C [CTRL+c] to stop
 
 Mandatory argument:
-        CIDR : must be a valid subnet (ex : 192.168.1.0/24). A host address will not work (ex : 192.168.1.1/24).
+    CIDR : must be a valid subnet (ex : 192.168.1.0/24). A host address will not work (ex : 192.168.1.1/24).
 
 Optional arguments:
     -h, --help              Display this help message and exit.
     -t, --timeout SECONDS   SSH connection timeout. Cannot be below 1 nor above 59. Default is 1.
     -o, --output FILE       Output file.
+    -i, --identity FILE     Path to private key for SSH connections.
 
 Examples:
-        "${SELF}" 192.168.0.0/24                Scan addresses from 192.168.0.0 to 192.168.0.255. Prints results in STDOUT.
-        "${SELF}" -t 2 192.168.0.0/24           Same but with a ssh connection timeout of 2s. Prints results in STDOUT.
-        "${SELF}" -o scan.csv 192.168.0.0/24    Same, prints results in both STDOUT and "scan.csv"
+    "${SELF}" 192.168.0.0/24                Scan addresses from 192.168.0.0 to 192.168.0.255. Prints results in STDOUT.
+    "${SELF}" -t 2 192.168.0.0/24           Same but with a ssh connection timeout of 2s. Prints results in STDOUT.
+    "${SELF}" -o scan.csv 192.168.0.0/24    Same, prints results in both STDOUT and "scan.csv"
 
 Notes:
-	WARNING : It is strongly advised against using a small netmask (ex : below /24) as it could take a VERY LONG time...
+    WARNING : It is strongly advised against using a small netmask (ex : below /24) as it could take a VERY LONG time...
 EOF
 
 }
@@ -52,25 +53,26 @@ EOF
 echo -n "Parse arguments... "
 TIMEOUT=1
 OUTPUT=""
+PRIVATE_KEY=""
 CIDR=""
 while (( $# )); do
-	case $1 in
-		-t|--timeout)
-			if (( $(echo "${2}" | grep -Pc "^\d+$") )); then
-				if (( "${2}" >= 3 )); then
-					echo "WARNING: a timeout of 3s can take time !"
-				fi
-				if (( "${2}" < 1 || "${2}" > 59 )); then
-					echo KO
-					echo "Assertion violated: 1 < ${2} < 59 !"
-					exit 3
-				fi
-				TIMEOUT="${2}"
-			fi
-			shift
-			shift
-			;;
-		-o|--output)
+    case $1 in
+        -t|--timeout)
+            if (( $(echo "${2}" | grep -Pc "^\d+$") )); then
+                if (( "${2}" >= 3 )); then
+                    echo "WARNING: a timeout of 3s can take time !"
+                fi
+                if (( "${2}" < 1 || "${2}" > 59 )); then
+                    echo KO
+                    echo "Assertion violated: 1 < ${2} < 59 !"
+                    exit 3
+                fi
+                TIMEOUT="${2}"
+            fi
+            shift
+            shift
+            ;;
+        -o|--output)
             if [[ -s "${2}" ]]; then
                 echo "File ${2} already exists. Overwrite [1|2] ? "
                 select ans in yes no; do
@@ -85,13 +87,24 @@ while (( $# )); do
                 done
             fi
             OUTPUT="${2}"
-			shift
-			shift
-			;;
-		-h|--help)
-			usage
-			exit 5
-			;;
+            shift
+            shift
+            ;;
+        -i|--identity)
+            if [[ -s "${2}" ]]; then
+                PRIVATE_KEY="${2}"
+            else
+                echo KO
+                echo "${2} not found or empty"
+                exit 9
+            fi
+            shift
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 5
+            ;;
         *)
             if (( ! $(echo "${1}" | grep -coP ${CIDR_PATTERN}) )) || [[ ! -z ${CIDR} ]]; then
                 echo KO
@@ -114,7 +127,7 @@ echo OK
 
 echo hostname,@IP,listening ports | tee "${TMP_FILE}"
 for i in $(prips ${CIDR}); do
-    ssh -o connectTimeout=${TIMEOUT} -o passwordAuthentication=no ${i} "
+    ssh ${PRIVATE_KEY:+-i} "${PRIVATE_KEY:-}" -o connectTimeout=${TIMEOUT} -o strictHostKeyChecking=no -o passwordAuthentication=no ${i} "
         echo -n \$(hostname) && \
         echo -n ',' && \
         echo -n \$(hostname -I) && \
