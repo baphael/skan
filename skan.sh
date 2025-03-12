@@ -127,7 +127,7 @@ echo OK
 
 echo hostname,@IP,listening ports | tee "${TMP_FILE}"
 for i in $(prips ${CIDR}); do
-    ssh ${PRIVATE_KEY:+-i} "${PRIVATE_KEY:-}" -o connectTimeout=${TIMEOUT} -o strictHostKeyChecking=no -o passwordAuthentication=no ${i} "
+    ssh ${PRIVATE_KEY:+-i} ${PRIVATE_KEY:-} -o connectTimeout=${TIMEOUT} -o strictHostKeyChecking=no -o passwordAuthentication=no ${i} "
         echo -n \$(hostname) && \
         echo -n ',' && \
         echo -n \$(hostname -I) && \
