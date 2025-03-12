@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-PIDS=()
 SCRIPT_PATH="$(dirname $(realpath -- $0))"
 TMP_PATH="${SCRIPT_PATH%/}/tmp_skan"
 TMP_FILE="${TMP_PATH%/}/tmp_skan"
@@ -17,6 +16,13 @@ if ! ( [[ "${TMP_FILE}" == "${TMP_PATH}"* ]] || (( ${#TMP_FILE} > ${#TMP_PATH} )
     echo "${TMP_FILE}" must be subpath of "${TMP_PATH}" !
     exit 12
 fi
+
+# FLUSH TMP DIRECTORY ON INTERRUPTION
+trap ctrl_c INT
+function ctrl_c() {
+    rm -r "${TMP_PATH}"
+    exit 255
+}
 
 echo -n "Check privileges... "
 if ! (( $(id -u) )); then
@@ -43,41 +49,51 @@ Description:
     Asynchronous (fast af) subnet scanner.
 
 Usage:
-    "${SELF}" [-t|--timeout SECONDS] [-o|--output FILE] [-i|--identity FILE] [-p|--port PORT] [-r|--refused] [-3|--ping|--icmp] CIDR
+    "${SELF}" [-p|--port PORT] [-u|--user USERNAME] [-t|--timeout SECONDS] [-e|--extended PORTS] [-3|--ping|--icmp] [-r|--refused] [-o|--output FILE] [-i|--identity FILE] [-h|--help] CIDR
     Press ^C [CTRL+c] to stop
 
 Mandatory argument:
     CIDR : must be a valid subnet (ex : 192.168.1.0/24). A host address will not work (ex : 192.168.1.1/24).
 
 Optional arguments:
-    -h, --help              Display this help message and exit.
+    -p, --port PORT         Specify SSH port. Default is 22.
+    -u, --user USERNAME     SPECIFY SSH username. Default is your current username.
     -t, --timeout SECONDS   SSH connection timeout. Cannot be below 1 nor above 59. Default is 1.
+    -e, --extended PORT     Extended ports scan. Defaults to SSH port.
+                            Can be used multiple times for multiple ports ranges or lists.
+                            Supports ranges START-END.
+                            Supports ,-delimited list of ports PORTA,PORTB,PORTC...
+    -3, --ping, --icmp      Extended ICMP scan. Includes hosts with L3 ICMP echo response (ping).
+    -r, --refused           Include "connection refused" status in extended ports scan.
+                            Default kept statuses are "succeeded", "version mismatch" and "permission denied".
     -o, --output FILE       Output file.
     -i, --identity FILE     Path to private key for SSH connections.
-    -p, --port              Specify SSH port. Default is 22.
-    -r, --refused           Include hosts with port 22 opened but connection refused.
-    -3, --ping, --icmp      Include hosts with response to ping (L3 ICMP echo response)
+    -h, --help              Display this help message and exit.
 
 Examples:
-    ./${SELF} 192.168.0.0/24                Scan addresses from 192.168.0.0 to 192.168.0.255. Prints results in STDOUT.
-    ./${SELF} -p 2222 -3 -r 192.168.0.0/24  Same but runs much deeper scan.
-    ./${SELF} -t 2 192.168.0.0/24           Same but with a ssh connection timeout of 2s. Prints results in STDOUT.
-    ./${SELF} -o scan.csv 192.168.0.0/24    Same, prints results in both STDOUT and "scan.csv"
+    ./${SELF} -u jdoe 192.168.0.0/24        Scan addresses from 192.168.0.0 to 192.168.0.255 using the standard SSH key-based method with remote user "jdoe".
+    ./${SELF} -3 -e 22-25 -e 80,443 192.168.0.0/24  Runs a much deeper scan with ports 22, 23, 24, 25, 80, 443 and ICMP (ping).
+    ./${SELF} -t 2 192.168.0.0/24           Basic SSH key-based scan with a ssh connection timeout of 2s.
+    ./${SELF} -o scan.csv 192.168.0.0/24    Same, prints results in both STDOUT and "scan.csv".
 
 Notes :
     Standard scan retrieves hostname, IP addresses and listening ports (TCP/UDP) but requires SSH key-based access.
-    Extended scanning methods (-r and -3) do not require any key or password but will not retrieve hostname or listening ports.
+    Extended ports scan (-e) do not require any key but will not retrieve hostname.
+    Extended ICMP (-3) do not require any key but will not retrieve hostname or ports.
 EOF
 
 }
 
 echo -n "Parse arguments... "
 TIMEOUT=1
-PORT=22
-REFUSED=0
-PING=0
+SSH_PORT=22
+PORTS=()
+USER=$(id -un)
+EXTENDED=""
+PING=""
 OUTPUT=""
 PRIVATE_KEY=""
+NC_STATUSES="succeeded|version mismatch|permission denied"
 CIDR=""
 while (( $# )); do
     case $1 in
@@ -93,6 +109,16 @@ while (( $# )); do
                 fi
                 TIMEOUT="${2}"
             fi
+            shift
+            shift
+            ;;
+        -u|--user)
+            if [[ ! "${2}" =~ ^[a-z][-a-z0-9_]*\$?$ ]]; then
+                echo KO
+                echo "Invalid username ${2}"
+                exit 16
+            fi
+            USER="${2}"
             shift
             shift
             ;;
@@ -123,13 +149,41 @@ while (( $# )); do
                     exit 14
                 fi
             fi
-            PORT=${2}
+            SSH_PORT=${2}
+            shift
+            shift
+            ;;
+        -e|--extended)
+            EXTENDED=1
+            if (( $(echo "${2}" | grep -Pc "^\d+$") )); then
+                    if (( ${2} > 0 && ${2} < 65536 )); then
+                        PORTS+=(${2})
+                    else
+                        echo "Illegal port ${2} will be ignored."
+                    fi
+            elif (( $(echo "${2}" | grep -Pc "^\d+-\d+$") )); then
+                port_range_lower_bound=$(echo "${2}"|cut -d- -f1)
+                port_range_upper_bound=$(echo "${2}"|cut -d- -f2)
+                if (( ! (${port_range_lower_bound} < ${port_range_upper_bound}) )); then
+                    echo "Illegal port range. Assertion violated: ${port_range_lower_bound} < ${port_range_upper_bound} ! This port range will be ignored."
+                fi
+                PORTS+=($(seq ${port_range_lower_bound} ${port_range_upper_bound}))
+            elif (( $(echo "${2}" | grep -Pc "^(\d+,)+\d+$") )); then
+                ports_list=($(echo "${2}" | tr -s "," " "))
+                for port in ${ports_list[@]}; do
+                    if (( ${port} > 0 && ${port} < 65536 )); then
+                        PORTS+=(${port})
+                    else
+                        echo "Illegal port ${port} will be ignored."
+                    fi
+                done
+            fi
             shift
             shift
             ;;
         -i|--identity)
-            if [[ -s "${2}" ]]; then
-                PRIVATE_KEY="${2}"
+            if [[ -s $(realpath "${2}") ]]; then
+                PRIVATE_KEY=$(realpath "${2}")
             else
                 echo KO
                 echo "${2} not found or empty"
@@ -138,12 +192,12 @@ while (( $# )); do
             shift
             shift
             ;;
-        -r|--refused)
-            REFUSED=1
-            shift
-            ;;
         -3|--ping|--icmp)
             PING=1
+            shift
+            ;;
+        -r|--refused)
+            NC_STATUSES+="|connection refused"
             shift
             ;;
         -h|--help)
@@ -162,13 +216,19 @@ while (( $# )); do
             ;;
     esac
 done
+
 if [[ -z "${CIDR}" ]]; then
     echo KO
     echo "This script requires one argument of the form X.X.X.X/X"
     usage
     exit 7
 fi
+
+# EXTENDED PORTS SCAN DEFAULTS TO SSH PORTS
+PORTS=(${PORTS[@]:-${SSH_PORT}})
+
 echo OK
+echo
 
 if [[ ! -d "${TMP_PATH}" ]]; then
     mkdir -p "${TMP_PATH}"
@@ -189,10 +249,12 @@ fi
 START_TIME=$(date +%s)
 
 echo "[Running standard SSH scan]"
-COUNT=1
+# COUNT IS USED AS FILE PREFIX FOR ORDERING RESULTS
+COUNT=0
+PIDS=()
 for i in $(prips ${CIDR}); do
     COUNT=$(( COUNT+1 ))
-    ssh -p ${PORT} ${PRIVATE_KEY:+-i} ${PRIVATE_KEY:-} -o connectTimeout=${TIMEOUT} -o strictHostKeyChecking=no -o passwordAuthentication=no ${i} "
+    ssh -p ${PORT:-22} ${PRIVATE_KEY:+-i} ${PRIVATE_KEY:-} -o ConnectTimeout=${TIMEOUT} -o StrictHostKeyChecking=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o BatchMode=yes "${USER}@${i}" "
         echo -n \$(hostname) && \
         echo -n ',' && \
         echo -n \$(hostname -I) && \
@@ -216,60 +278,113 @@ for pid in "${PIDS[@]}"; do
     wait ${pid}
 done
 
-cat "${TMP_PATH}/"*
+# SORT ASCENNDING
+FILES=($(ls -pv "${TMP_PATH%/}/"* | grep -vP /$))
+cat "${FILES[@]}"
 
-if (( ${REFUSED} )); then
-    COUNT=1
-    PIDS=()
+if (( ${EXTENDED} )); then
+    COUNT=0
     echo
-    echo "[Running extended SSH scan]"
+    echo "[Running extended ports scan]"
+    PIDS=()
     for i in $(prips ${CIDR}); do
         COUNT=$(( COUNT+1 ))
-        if [[ ! -f "${TMP_PATH%/}/${COUNT}-${i}" || ! -s "${TMP_PATH%/}/${COUNT}-${i}" ]]; then
-            (
-                nc -zvvw ${TIMEOUT} ${i} ${PORT} &> "${TMP_PATH%/}/${COUNT}-${i}"
-                if (( $(grep -ciP "connection refused" "${TMP_PATH%/}/${COUNT}-${i}") )); then
-                    echo "UNKNOWN,${i},${PORT}" | tee "${TMP_PATH%/}/${COUNT}-${i}"
-                else
-                    >"${TMP_PATH%/}/${COUNT}-${i}"
+        (
+            # ONLY IF PREVIOUS SCAN RETRIEVED NOTHING
+            if [[ ! -f "${TMP_PATH%/}/${COUNT}-${i}" || ! -s "${TMP_PATH%/}/${COUNT}-${i}" ]]; then
+                SUBPIDS=()
+                for p in ${PORTS[@]}; do
+                    (
+                        NC=$(nc -nzvvw ${TIMEOUT} ${i} ${p} 2>&1)
+
+                        # MUST USE TMP FILE BECAUSE VARIABLES DEFINED INSIDE SUBSHELL ARE NOT ACCESSIBLE OUTSIDE
+                        if (( $(echo "${NC}" | grep -ciP "${NC_STATUSES}") )); then
+                            if [[ ! -f "${TMP_PATH%/}/${COUNT}-${i}-ports" || ! -s "${TMP_PATH%/}/${COUNT}-${i}-ports" ]]; then
+                                echo -n "${p}" >> "${TMP_PATH%/}/${COUNT}-${i}-ports"
+                            else
+                                echo -n " ${p}" >> "${TMP_PATH%/}/${COUNT}-${i}-ports"
+                            fi
+                        fi
+                    ) & # ASYNC
+                    SUBPIDS+=($!)
+                done
+                # AWAIT
+                for pid in "${SUBPIDS[@]}"; do
+                    wait ${pid}
+                done
+
+                # CONSOLIDATE FINAL FILE AND REMOVE TMP PORTS FILE
+                if [[ -s "${TMP_PATH%/}/${COUNT}-${i}-ports" ]] && ! (( $(grep -c "," "${TMP_PATH%/}/${COUNT}-${i}-ports") )); then
+                    cat <(echo "UNKNOWN,${i},") "${TMP_PATH%/}/${COUNT}-${i}-ports" | tr -d "\n" > "${TMP_PATH%/}/${COUNT}-${i}-EXT"
+                    echo >>"${TMP_PATH%/}/${COUNT}-${i}-EXT"
+                    rm "${TMP_PATH%/}/${COUNT}-${i}-ports"
                 fi
-            ) & #ASYNC
-            PIDS+=($!)
+            fi
+        ) & # ASYNC
+        PIDS+=($!)
+    done
+    # AWAIT
+    for pid in "${PIDS[@]}"; do
+        wait ${pid}
+    done
+
+    # PRINT TO STDOUT (ASCENDING ORDER)
+    FILES=($(ls -pv "${TMP_PATH%/}/"*-EXT | grep -vP /$))
+    for ext in "${FILES[@]}"; do
+        if [[ -s "${ext}" ]]; then
+            cat "${ext}" 2>/dev/null
+            # MERGE EXTENDED SCAN FILE INTO ORIGINAL SSH SCAN FILE
+            mv "${ext}" "${ext%-EXT}" 2>/dev/null
         fi
     done
 fi
 
-# AWAIT
-for pid in "${PIDS[@]}"; do
-    wait ${pid}
-done
-
 if (( ${PING} )); then
-    COUNT=1
+    COUNT=0
     PIDS=()
     echo
     echo "[Running extended ICMP scan]"
     for i in $(prips ${CIDR}); do
         COUNT=$(( COUNT+1 ))
+        # ONLY IF PREVIOUS SCANS RETRIEVED NOTHING
         if [[ ! -f "${TMP_PATH%/}/${COUNT}-${i}" || ! -s "${TMP_PATH%/}/${COUNT}-${i}" ]]; then
             (
                 ping -c1 -W${TIMEOUT} ${i} &>/dev/null
                 if (( $? == 0 )); then
-                    echo "PING,${i}" | tee "${TMP_PATH%/}/${COUNT}-${i}"
+                    echo "UNKNOWN,${i}" > "${TMP_PATH%/}/${COUNT}-${i}-ICMP"
                 fi
             ) & #ASYNC
             PIDS+=($!)
         fi
     done
+
+    # AWAIT
+    for pid in "${PIDS[@]}"; do
+        wait ${pid}
+    done
+
+    # PRINT TO STDOUT (ASCENDING ORDER)
+    FILES=($(ls -pv "${TMP_PATH%/}/"*-ICMP | grep -vP /$))
+    for icmp in "${FILES[@]}"; do
+        if [[ -s "${icmp}" ]]; then
+            cat "${icmp}" 2>/dev/null
+            # MERGE ICMP SCAN FILE INTO ORIGINAL SSH SCAN FILE
+            mv "${icmp}" "${icmp%-EXT}" 2>/dev/null
+        fi
+    done
 fi
 
-# AWAIT
-for pid in "${PIDS[@]}"; do
-    wait ${pid}
-done
+# CONCAT ALL RESULTS IN ASCENDING VERSION ORDER
+FILES=($(ls -pv "${TMP_PATH%/}/"* | grep -vP /$))
+cat <(echo hostname,@IP,listening ports) "${FILES[@]}" > "${TMP_FILE}" 2>/dev/null
+echo
 
-# CONCAT ALL RESULTS
-cat <(echo hostname,@IP,listening ports) "${TMP_PATH%/}/"* > "${TMP_FILE}"
+FOUND=$(wc -l "${TMP_FILE}" | cut -d' ' -f1 2>/dev/null)
+if (( $(echo "${FOUND}" | grep -Pc "^\d+$") )) && (( ${FOUND} > 0 )); then
+    FOUND=$(( FOUND-1 ))
+    echo  "${FOUND} host(s) found."
+    echo
+fi
 
 if [[ ! -z "${OUTPUT}" ]]; then
     mv "${TMP_FILE}" "${OUTPUT}"
