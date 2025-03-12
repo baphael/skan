@@ -4,8 +4,25 @@ SCRIPT_PATH="$(dirname $(realpath -- $0))"
 TMP_PATH="${SCRIPT_PATH%/}/tmp_skan"
 TMP_FILE="${TMP_PATH%/}/tmp_skan"
 MAX_HOSTS=4096 #/20
+
+# Limit of parallel threads
+MAX_THREADS=$(cat /proc/sys/kernel/threads-max 2>/dev/null)
+CURRENT_N_THREADS=$(ps -eLf | wc -l)
+if (( $(echo "${MAX_THREADS}${CURRENT_N_THREADS}" | grep -Pc "^\d+$") && $MAX_THREADS && $CURRENT_N_THREADS )); then
+    MAX_THREADS=$(( ${MAX_THREADS} / $CURRENT_N_THREADS )) # Limit = threads-max / current number of threads
+fi
+# Fallback to default value
+if ! (( $MAX_THREADS )); then MAX_THREADS=16; fi
+
+# Limit of parallel "sub-threads" per thread
+MAX_SUBTHREADS=$( echo "scale=0; sqrt(${MAX_THREADS})" | bc -l ) # square root of MAX_THREADS
+# Fallback to default value
+if ! (( $MAX_SUBTHREADS )); then MAX_SUBTHREADS=4; fi
+
 # Simple IPv4 PCRE pattern
-CIDR_PATTERN="(\d{1,3}\.){3}\d{1,3}/\d{1,2}"
+IP_PATTERN="(\d{1,3}\.){3}\d{1,3}"
+# Simple IPv4 PCRE pattern
+CIDR_PATTERN="${IP_PATTERN}/\d{1,2}"
 
 if ! ( [[ "${TMP_PATH}" == "${SCRIPT_PATH}"* ]] || (( ${#TMP_PATH} > ${#SCRIPT_PATH} )) ); then
     echo "${TMP_PATH}" must be subpath of "${SCRIPT_PATH}" !
@@ -15,6 +32,15 @@ fi
 if ! ( [[ "${TMP_FILE}" == "${TMP_PATH}"* ]] || (( ${#TMP_FILE} > ${#TMP_PATH} )) ); then
     echo "${TMP_FILE}" must be subpath of "${TMP_PATH}" !
     exit 12
+fi
+
+if [[ ! -d "${TMP_PATH}" ]]; then
+    mkdir -p "${TMP_PATH}" 2>/dev/null
+    if [[ ! -d "${TMP_PATH}" ]]; then
+        echo KO
+        echo "Could not create temporary directory ${TMP_PATH}"
+        exit 10
+    fi
 fi
 
 # FLUSH TMP DIRECTORY ON INTERRUPTION
@@ -46,7 +72,7 @@ function usage() {
     cat <<EOF
 
 Description:
-    Asynchronous (fast af) subnet scanner.
+    Asynchronous subnet scanner.
 
 Usage:
     "${SELF}" [-p|--port PORT] [-u|--user USERNAME] [-t|--timeout SECONDS] [-e|--extended PORTS] [-3|--ping|--icmp] [-r|--refused] [-o|--output FILE] [-i|--identity FILE] [-h|--help] CIDR
@@ -56,19 +82,34 @@ Mandatory argument:
     CIDR : must be a valid subnet (ex : 192.168.1.0/24). A host address will not work (ex : 192.168.1.1/24).
 
 Optional arguments:
+    Global options
+    -t, --timeout SECONDS   SSH connection timeout. Cannot be below 1 nor above 59. Default is 1.
+
+    SSH-specific options
     -p, --port PORT         Specify SSH port. Default is 22.
     -u, --user USERNAME     Specify SSH username. Default is your current username.
-    -t, --timeout SECONDS   SSH connection timeout. Cannot be below 1 nor above 59. Default is 1.
+    -i, --identity FILE     Path to private key for SSH connections.
+
+    Extended scanning methods
     -e, --extended PORT     Extended ports scan. Defaults to SSH port.
                             Can be used multiple times for multiple ports ranges or lists.
                             Supports ranges START-END.
                             Supports ,-delimited list of ports PORTA,PORTB,PORTC...
-    -3, --ping, --icmp      Extended ICMP scan. Includes hosts with L3 ICMP echo response (ping).
     -r, --refused           Include "connection refused" status in extended ports scan.
-                            Default kept statuses are "succeeded", "version mismatch" and "permission denied".
+                            Default kept statuses are "succeeded", "open", "connected", "version mismatch" and "permission denied".
                             Discouraged if scanning a subnet matching your current broadcast domain !
+    -3, --ping, --icmp      Extended ICMP scan. Includes hosts with L3 ICMP echo response (ping).
+
+    Miscellaneous
     -o, --output FILE       Output file.
-    -i, --identity FILE     Path to private key for SSH connections.
+
+    -f, --fast              Increase parallel threads limit. Warning, it may cause CPU overload !
+    -s, --slow              Decrease parallel threads limit. Scans will be slower, but CPU load should stay quite low.
+
+    -v, --verbose           Verbose mode.
+    -vv, --super-verbose    Verbose mode with parallel threads guardrail awaits.
+    -vvv, --turbo-verbose   Verbose mode with parallel threads and subthreads guardrail awaits. Output will be messy !
+
     -h, --help              Display this help message and exit.
 
 Examples:
@@ -93,8 +134,14 @@ USER=$(id -un)
 EXTENDED=""
 PING=""
 OUTPUT=""
+VERBOSE=""
+SUPER_VERBOSE=""
+TURBO_VERBOSE=""
 PRIVATE_KEY=""
-NC_STATUSES="succeeded|version mismatch|permission denied"
+SLOW=""
+FAST=""
+REFUSED=""
+NC_STATUSES="open|succeeded|connected to|version mismatch|permission denied"
 CIDR=""
 while (( $# )); do
     case $1 in
@@ -199,6 +246,62 @@ while (( $# )); do
             ;;
         -r|--refused)
             NC_STATUSES+="|connection refused"
+            REFUSED=1
+            shift
+            ;;
+        -f|--fast)
+            if (( ${SLOW} )); then
+                echo KO
+                echo "Scan cannot be fast and slow !"
+                exit 18
+            fi
+
+            FAST=1
+
+            MAX_THREADS=$(( ${MAX_THREADS} * 3 / 2 ))
+            # Fallback to default value
+            if ! (( $MAX_THREADS )); then MAX_THREADS=16; fi
+
+            # Limit of parallel "sub-threads" per thread
+            MAX_SUBTHREADS=$( echo "scale=0; sqrt(${MAX_THREADS})" | bc -l ) # square root of MAX_THREADS
+            # Fallback to default value
+            if ! (( $MAX_SUBTHREADS )); then MAX_SUBTHREADS=4; fi
+
+            shift
+            ;;
+        -s|--slow)
+            if (( ${FAST} )); then
+                echo KO
+                echo "Scan cannot be fast and slow !"
+                exit 18
+            fi
+
+            SLOW=1
+
+            MAX_THREADS=$(( ${MAX_THREADS} * 2 / 3 ))
+            # Fallback to default value
+            if ! (( $MAX_THREADS )); then MAX_THREADS=16; fi
+
+            # Limit of parallel "sub-threads" per thread
+            MAX_SUBTHREADS=$( echo "scale=0; sqrt(${MAX_THREADS})" | bc -l ) # square root of MAX_THREADS
+            # Fallback to default value
+            if ! (( $MAX_SUBTHREADS )); then MAX_SUBTHREADS=4; fi
+
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -vv|--super-verbose)
+            VERBOSE=1
+            SUPER_VERBOSE=1
+            shift
+            ;;
+        -vvv|--turbo-verbose)
+            VERBOSE=1
+            SUPER_VERBOSE=1
+            TURBO_VERBOSE=1
             shift
             ;;
         -h|--help)
@@ -208,11 +311,18 @@ while (( $# )); do
         *)
             if (( ! $(echo "${1}" | grep -coP ${CIDR_PATTERN}) )) || [[ ! -z ${CIDR} ]]; then
                 echo KO
-                echo "This script requires one argument of the form X.X.X.X/X"
+                echo "This script takes only one positional argument of the form X.X.X.X/X"
                 usage
                 exit 6
             fi
             CIDR="${1}"
+            RANGE=$(prips ${CIDR})
+            N_HOSTS=$(echo ${RANGE}|wc -w)
+            if (( ${N_HOSTS} > ${MAX_HOSTS} )); then
+                echo KO
+                echo "Number of hosts (${N_HOSTS}) should not exceed ${MAX_HOSTS}"
+                exit 13
+            fi
             shift
             ;;
     esac
@@ -231,20 +341,52 @@ PORTS=(${PORTS[@]:-${SSH_PORT}})
 echo OK
 echo
 
-if [[ ! -d "${TMP_PATH}" ]]; then
-    mkdir -p "${TMP_PATH}" 2>/dev/null
-    if [[ ! -d "${TMP_PATH}" ]]; then
-        echo KO
-        echo "Could not create temporary directory ${TMP_PATH}"
-        exit 10
+if (( ${VERBOSE} )); then
+    echo "CIDR : ${CIDR} (${N_HOSTS} host(s))"
+    echo -e "Scanning methods :\n\t- standard key-based SSH on port ${SSH_PORT} with user ${USER}"
+    if (( ${EXTENDED} )); then
+        echo -ne "\t- extended scan on ports ${PORTS[@]}"
+        if (( ${REFUSED} )); then
+            echo " (with refused connections)"
+        else
+            echo
+        fi
     fi
+    if (( ${PING} )); then echo -e "\t- extended ICMP scan"; fi
+    echo "Timeout : ${TIMEOUT} second(s)"
+    if [[ ! -z "${PRIVATE_KEY}" ]]; then echo "Custom private key : ${PRIVATE_KEY}"; fi
+    if [[ ! -z "${OUTPUT}" ]]; then echo "Output file : ${OUTPUT}"; fi
+    echo "Temporary path : ${TMP_PATH}"
+    echo "Temporary file : ${TMP_FILE}"
+    echo "Maximum parallel thread(s) : ${MAX_THREADS}"
+    echo "Maximum parallel \"sub-thread(s)\" per thread : ${MAX_SUBTHREADS}"
+    echo
 fi
 
-RANGE=$(prips ${CIDR})
-N_HOSTS=$(echo ${RANGE}|wc -w)
-if (( ${N_HOSTS} > ${MAX_HOSTS} )); then
-    echo "Number of hosts (${N_HOSTS}) should not exceed ${MAX_HOSTS}"
-    exit 13
+ETA_SSH=0
+ETA_EXT=0
+ETA_ICMP=0
+ETA_SSH=$(( 2 *  ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
+if (( ${VERBOSE} )); then echo "Key-base SSH scan ETA : ${ETA_SSH}"; fi
+
+if (( ${EXTENDED} )); then
+    ETA_EXT=$(( 2 * ${N_HOSTS} * ${#PORTS[@]} * ${TIMEOUT} / ${MAX_THREADS} / ${MAX_SUBTHREADS} ))
+    if (( ${VERBOSE} )); then echo "Extended ports scan ETA : ${ETA_EXT} second(s)"; fi
+fi
+
+if (( ${ICMP} )); then
+    ETA_ICMP=$(( 2 * ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
+    if (( ${VERBOSE} )); then echo "ICMP scan ETA : ${ETA_ICMP} seconds"; fi
+fi
+
+ETA=$(( ${ETA_SSH} + ${ETA_EXT} + ${ETA_ICMP} ))
+
+echo "ETA : ${ETA} seconds"
+echo
+
+if (( ${MAX_THREADS} < 16 || ${MAX_SUBTHREADS} < 4 )); then
+    echo "[WARNING] MAX_THREADS=${MAX_THREADS} MAX_SUBTHREADS=${MAX_SUBTHREADS} might be slow !"
+    echo
 fi
 
 START_TIME=$(date +%s)
@@ -272,8 +414,17 @@ for i in $(prips ${CIDR}); do
         echo
     " 2>/dev/null > "${TMP_PATH%/}/${COUNT}-${i}" & #ASYNC
     PIDS+=($!)
-done
 
+    if (( ${#PIDS[@]} >= ${MAX_THREADS} )); then
+        # GUARDRAIL AWAIT
+        if (( ${SUPER_VERBOSE} )); then echo -n "Guardrail await (${MAX_THREADS} parallel threads)... "; fi
+        for pid in "${PIDS[@]}"; do
+            wait ${pid}
+        done
+        PIDS=()
+        if (( ${SUPER_VERBOSE} )); then echo "OK"; fi
+    fi
+done
 # AWAIT
 for pid in "${PIDS[@]}"; do
     wait ${pid}
@@ -297,7 +448,6 @@ if (( ${EXTENDED} )); then
                 for p in ${PORTS[@]}; do
                     (
                         NC=$(nc -nzvvw ${TIMEOUT} ${i} ${p} 2>&1)
-
                         # MUST USE TMP FILE BECAUSE VARIABLES DEFINED INSIDE SUBSHELL ARE NOT ACCESSIBLE OUTSIDE
                         if (( $(echo "${NC}" | grep -ciP "${NC_STATUSES}") )); then
                             if [[ ! -f "${TMP_PATH%/}/${COUNT}-${i}-ports" || ! -s "${TMP_PATH%/}/${COUNT}-${i}-ports" ]]; then
@@ -308,6 +458,15 @@ if (( ${EXTENDED} )); then
                         fi
                     ) & # ASYNC
                     SUBPIDS+=($!)
+
+                    if (( ${#SUBPIDS[@]} >= ${MAX_SUBTHREADS} )); then
+                        # GUARDRAIL AWAIT
+                        if (( ${TURBO_VERBOSE} )); then echo "Guardrail await (${MAX_SUBTHREADS} parallel \"subthreads\")"; fi
+                        for pid in "${SUBPIDS[@]}"; do
+                            wait ${pid}
+                        done
+                        SUBPIDS=()
+                    fi
                 done
                 # AWAIT
                 for pid in "${SUBPIDS[@]}"; do
@@ -323,6 +482,16 @@ if (( ${EXTENDED} )); then
             fi
         ) & # ASYNC
         PIDS+=($!)
+
+        if (( ${#PIDS[@]} >= ${MAX_THREADS} )); then
+            # GUARDRAIL AWAIT
+            if (( ${SUPER_VERBOSE} )); then echo -n "Guardrail await (${MAX_THREADS} parallel threads)... "; fi
+            for pid in "${PIDS[@]}"; do
+                wait ${pid}
+            done
+            PIDS=()
+            if (( ${SUPER_VERBOSE} )); then echo "OK"; fi
+        fi
     done
     # AWAIT
     for pid in "${PIDS[@]}"; do
@@ -356,9 +525,18 @@ if (( ${PING} )); then
                 fi
             ) & #ASYNC
             PIDS+=($!)
+
+            if (( ${#PIDS[@]} >= ${MAX_THREADS} )); then
+                # GUARDRAIL AWAIT
+                if (( ${SUPER_VERBOSE} )); then echo -n "Guardrail await (${MAX_THREADS} parallel threads)... "; fi
+                for pid in "${PIDS[@]}"; do
+                    wait ${pid}
+                done
+                PIDS=()
+                if (( ${SUPER_VERBOSE} )); then echo "OK"; fi
+            fi
         fi
     done
-
     # AWAIT
     for pid in "${PIDS[@]}"; do
         wait ${pid}
@@ -370,7 +548,7 @@ if (( ${PING} )); then
         if [[ -s "${icmp}" ]]; then
             cat "${icmp}" 2>/dev/null
             # MERGE ICMP SCAN FILE INTO ORIGINAL SSH SCAN FILE
-            mv "${icmp}" "${icmp%-EXT}" 2>/dev/null
+            mv "${icmp}" "${icmp%-ICMP}" 2>/dev/null
         fi
     done
 fi
