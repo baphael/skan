@@ -15,7 +15,7 @@ fi
 if ! (( $MAX_THREADS )); then MAX_THREADS=16; fi
 
 # Limit of parallel "sub-threads" per thread
-MAX_SUBTHREADS=$( echo "scale=0; sqrt(${MAX_THREADS})" | bc -l ) # square root of MAX_THREADS
+MAX_SUBTHREADS=$( echo ${MAX_THREADS} | awk '{print(int(sqrt($0)))}' ) # square root of MAX_THREADS
 # Fallback to default value
 if ! (( $MAX_SUBTHREADS )); then MAX_SUBTHREADS=4; fi
 
@@ -43,7 +43,44 @@ if [[ ! -d "${TMP_PATH}" ]]; then
     fi
 fi
 
-# FLUSH TMP DIRECTORY ON INTERRUPTION
+# Turn CIDR into list of IPs
+function cidr2ips() {
+    if (( $# != 1 )); then
+        echo "CIDR to IPs conversion takes (only) one argument"
+        exit 20
+    fi
+    if ! (( $(echo "${1}" | grep -cP ${CIDR_PATTERN}) )); then
+        echo "Invalid CIDR ${1}"
+        exit 20
+    fi
+    cidr="${1}"
+
+    originalIFS=$IFS
+
+    # Split CIDR into base IP and mask
+    IFS=/ read -r base_ip mask <<< "$cidr"
+
+    # Convert base IP to a 32-bit integer
+    IFS=. read -r i1 i2 i3 i4 <<< "$base_ip"
+    ip=$(( (i1 << 24) + (i2 << 16) + (i3 << 8) + i4 ))
+
+    IFS=$originalIFS
+
+    # Calculate the network mask dynamically based on CIDR
+    netmask=$(( (1 << (32 - mask)) - 1 ))
+    netmask=$(( ~netmask & 0xFFFFFFFF ))
+
+    # Calculate start and end of the range
+    start=$((ip & netmask))
+    end=$((start | ~netmask & 0xFFFFFFFF))
+
+    # Generate all IPs in the range
+    for ((i = start; i <= end; i++)); do
+        printf "%d.%d.%d.%d\n" $(( (i >> 24) & 0xFF )) $(( (i >> 16) & 0xFF )) $(( (i >> 8) & 0xFF )) $((i & 0xFF))
+    done
+}
+
+# Flush tmp directory on interruption
 trap ctrl_c INT
 function ctrl_c() {
     rm -r "${TMP_PATH}" 2>/dev/null
@@ -55,15 +92,6 @@ if ! (( $(id -u) )); then
     echo KO
     echo "This script should NOT be executed as superuser."
     exit 1
-fi
-echo OK
-
-echo -n "Check dependencies... "
-dpkg -l prips &>/dev/null
-if (( $? != 0 )); then
-    echo KO
-    echo "This scipt relies on prips and it seems it is not installed. To install it, run 'apt install prips' as superuser."
-    exit 2
 fi
 echo OK
 
@@ -263,7 +291,7 @@ while (( $# )); do
             if ! (( $MAX_THREADS )); then MAX_THREADS=16; fi
 
             # Limit of parallel "sub-threads" per thread
-            MAX_SUBTHREADS=$( echo "scale=0; sqrt(${MAX_THREADS})" | bc -l ) # square root of MAX_THREADS
+            MAX_SUBTHREADS=$( echo ${MAX_THREADS} | awk '{print(int(sqrt($0)))}' ) # square root of MAX_THREADS
             # Fallback to default value
             if ! (( $MAX_SUBTHREADS )); then MAX_SUBTHREADS=4; fi
 
@@ -283,7 +311,7 @@ while (( $# )); do
             if ! (( $MAX_THREADS )); then MAX_THREADS=16; fi
 
             # Limit of parallel "sub-threads" per thread
-            MAX_SUBTHREADS=$( echo "scale=0; sqrt(${MAX_THREADS})" | bc -l ) # square root of MAX_THREADS
+            MAX_SUBTHREADS=$( echo ${MAX_THREADS} | awk '{print(int(sqrt($0)))}' ) # square root of MAX_THREADS
             # Fallback to default value
             if ! (( $MAX_SUBTHREADS )); then MAX_SUBTHREADS=4; fi
 
@@ -309,15 +337,15 @@ while (( $# )); do
             exit 5
             ;;
         *)
-            if (( ! $(echo "${1}" | grep -coP ${CIDR_PATTERN}) )) || [[ ! -z ${CIDR} ]]; then
+            if (( ! $(echo "${1}" | grep -cP ${CIDR_PATTERN}) )) || [[ ! -z ${CIDR} ]]; then
                 echo KO
                 echo "This script takes only one positional argument of the form X.X.X.X/X"
                 usage
                 exit 6
             fi
             CIDR="${1}"
-            RANGE=$(prips ${CIDR})
-            N_HOSTS=$(echo ${RANGE}|wc -w)
+            RANGE=($(cidr2ips "${CIDR}"))
+            N_HOSTS=${#RANGE[@]}
             if (( ${N_HOSTS} > ${MAX_HOSTS} )); then
                 echo KO
                 echo "Number of hosts (${N_HOSTS}) should not exceed ${MAX_HOSTS}"
@@ -367,7 +395,7 @@ ETA_SSH=0
 ETA_EXT=0
 ETA_ICMP=0
 ETA_SSH=$(( 2 *  ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
-if (( ${VERBOSE} )); then echo "Key-base SSH scan ETA : ${ETA_SSH}"; fi
+if (( ${VERBOSE} )); then echo "Key-base SSH scan ETA : ${ETA_SSH} second(s)"; fi
 
 if (( ${EXTENDED} )); then
     ETA_EXT=$(( 2 * ${N_HOSTS} * ${#PORTS[@]} * ${TIMEOUT} / ${MAX_THREADS} / ${MAX_SUBTHREADS} ))
@@ -376,12 +404,12 @@ fi
 
 if (( ${ICMP} )); then
     ETA_ICMP=$(( 2 * ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
-    if (( ${VERBOSE} )); then echo "ICMP scan ETA : ${ETA_ICMP} seconds"; fi
+    if (( ${VERBOSE} )); then echo "ICMP scan ETA : ${ETA_ICMP} second(s)"; fi
 fi
 
 ETA=$(( ${ETA_SSH} + ${ETA_EXT} + ${ETA_ICMP} ))
 
-echo "ETA : ${ETA} seconds"
+echo "ETA : ${ETA} second(s)"
 echo
 
 if (( ${MAX_THREADS} < 16 || ${MAX_SUBTHREADS} < 4 )); then
@@ -395,7 +423,7 @@ echo "[Running standard SSH scan]"
 # COUNT IS USED AS FILE PREFIX FOR ORDERING RESULTS
 COUNT=0
 PIDS=()
-for i in $(prips ${CIDR}); do
+for i in "${RANGE[@]}"; do
     COUNT=$(( COUNT+1 ))
     ssh -p ${PORT:-22} ${PRIVATE_KEY:+-i} ${PRIVATE_KEY:-} -o ConnectTimeout=${TIMEOUT} -o StrictHostKeyChecking=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o BatchMode=yes "${USER}@${i}" "
         echo -n \$(hostname) && \
@@ -439,7 +467,7 @@ if (( ${EXTENDED} )); then
     echo
     echo "[Running extended ports scan]"
     PIDS=()
-    for i in $(prips ${CIDR}); do
+    for i in "${RANGE[@]}"; do
         COUNT=$(( COUNT+1 ))
         (
             # ONLY IF PREVIOUS SCAN RETRIEVED NOTHING
@@ -514,7 +542,7 @@ if (( ${PING} )); then
     PIDS=()
     echo
     echo "[Running extended ICMP scan]"
-    for i in $(prips ${CIDR}); do
+    for i in "${RANGE[@]}"; do
         COUNT=$(( COUNT+1 ))
         # ONLY IF PREVIOUS SCANS RETRIEVED NOTHING
         if [[ ! -f "${TMP_PATH%/}/${COUNT}-${i}" || ! -s "${TMP_PATH%/}/${COUNT}-${i}" ]]; then
