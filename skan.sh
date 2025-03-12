@@ -103,7 +103,7 @@ Description:
     Asynchronous subnet scanner.
 
 Usage:
-    "${SELF}" [-p|--port PORT] [-u|--user USERNAME] [-t|--timeout SECONDS] [-e|--extended PORTS] [-3|--ping|--icmp] [-r|--refused] [-o|--output FILE] [-i|--identity FILE] [-h|--help] CIDR
+    "${SELF}" [-t|--timeout SECONDS] [-p|--port PORT] [-u|--user USERNAME] [-i|--identity FILE] [-e|--extended PORTS] [-r|--refused] [-3|--ping|--icmp] [-o|--output FILE] [-f|--fast] [-s|--slow] [-v|--verbose] [-vv|--super-verbose] [-vvv --turbo-verbose] [-h|--help] CIDR
     Press ^C [CTRL+c] to stop
 
 Mandatory argument:
