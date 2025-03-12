@@ -57,7 +57,7 @@ Mandatory argument:
 
 Optional arguments:
     -p, --port PORT         Specify SSH port. Default is 22.
-    -u, --user USERNAME     SPECIFY SSH username. Default is your current username.
+    -u, --user USERNAME     Specify SSH username. Default is your current username.
     -t, --timeout SECONDS   SSH connection timeout. Cannot be below 1 nor above 59. Default is 1.
     -e, --extended PORT     Extended ports scan. Defaults to SSH port.
                             Can be used multiple times for multiple ports ranges or lists.
