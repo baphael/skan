@@ -20,7 +20,7 @@ fi
 # FLUSH TMP DIRECTORY ON INTERRUPTION
 trap ctrl_c INT
 function ctrl_c() {
-    rm -r "${TMP_PATH}"
+    rm -r "${TMP_PATH}" 2>/dev/null
     exit 255
 }
 
@@ -231,7 +231,7 @@ echo OK
 echo
 
 if [[ ! -d "${TMP_PATH}" ]]; then
-    mkdir -p "${TMP_PATH}"
+    mkdir -p "${TMP_PATH}" 2>/dev/null
     if [[ ! -d "${TMP_PATH}" ]]; then
         echo KO
         echo "Could not create temporary directory ${TMP_PATH}"
@@ -279,8 +279,8 @@ for pid in "${PIDS[@]}"; do
 done
 
 # SORT ASCENNDING
-FILES=($(ls -pv "${TMP_PATH%/}/"* | grep -vP /$))
-cat "${FILES[@]}"
+FILES=($(find "${TMP_PATH%/}" -maxdepth 1 -type f ! -empty 2>/dev/null | sort -V))
+cat "${FILES[@]}" 2>/dev/null
 
 if (( ${EXTENDED} )); then
     COUNT=0
@@ -315,9 +315,9 @@ if (( ${EXTENDED} )); then
 
                 # CONSOLIDATE FINAL FILE AND REMOVE TMP PORTS FILE
                 if [[ -s "${TMP_PATH%/}/${COUNT}-${i}-ports" ]] && ! (( $(grep -c "," "${TMP_PATH%/}/${COUNT}-${i}-ports") )); then
-                    cat <(echo "UNKNOWN,${i},") "${TMP_PATH%/}/${COUNT}-${i}-ports" | tr -d "\n" > "${TMP_PATH%/}/${COUNT}-${i}-EXT"
+                    cat <(echo "UNKNOWN,${i},") "${TMP_PATH%/}/${COUNT}-${i}-ports" 2>/dev/null | tr -d "\n" > "${TMP_PATH%/}/${COUNT}-${i}-EXT"
                     echo >>"${TMP_PATH%/}/${COUNT}-${i}-EXT"
-                    rm "${TMP_PATH%/}/${COUNT}-${i}-ports"
+                    rm "${TMP_PATH%/}/${COUNT}-${i}-ports" 2>/dev/null
                 fi
             fi
         ) & # ASYNC
@@ -329,7 +329,7 @@ if (( ${EXTENDED} )); then
     done
 
     # PRINT TO STDOUT (ASCENDING ORDER)
-    FILES=($(ls -pv "${TMP_PATH%/}/"*-EXT | grep -vP /$))
+    FILES=($(find "${TMP_PATH%/}" -maxdepth 1 -type f ! -empty -name "*-EXT" 2>/dev/null | sort -V))
     for ext in "${FILES[@]}"; do
         if [[ -s "${ext}" ]]; then
             cat "${ext}" 2>/dev/null
@@ -364,7 +364,7 @@ if (( ${PING} )); then
     done
 
     # PRINT TO STDOUT (ASCENDING ORDER)
-    FILES=($(ls -pv "${TMP_PATH%/}/"*-ICMP | grep -vP /$))
+    FILES=($(find "${TMP_PATH%/}" -maxdepth 1 -type f ! -empty -name "*-ICMP" 2>/dev/null | sort -V))
     for icmp in "${FILES[@]}"; do
         if [[ -s "${icmp}" ]]; then
             cat "${icmp}" 2>/dev/null
@@ -375,11 +375,11 @@ if (( ${PING} )); then
 fi
 
 # CONCAT ALL RESULTS IN ASCENDING VERSION ORDER
-FILES=($(ls -pv "${TMP_PATH%/}/"* | grep -vP /$))
+FILES=($(find "${TMP_PATH%/}" -maxdepth 1 -type f ! -empty 2>/dev/null | sort -V))
 cat <(echo hostname,@IP,listening ports) "${FILES[@]}" > "${TMP_FILE}" 2>/dev/null
 echo
 
-FOUND=$(wc -l "${TMP_FILE}" | cut -d' ' -f1 2>/dev/null)
+FOUND=$(wc -l "${TMP_FILE}" 2>/dev/null | cut -d' ' -f1)
 if (( $(echo "${FOUND}" | grep -Pc "^\d+$") )) && (( ${FOUND} > 0 )); then
     FOUND=$(( FOUND-1 ))
     echo  "${FOUND} host(s) found."
@@ -387,10 +387,10 @@ if (( $(echo "${FOUND}" | grep -Pc "^\d+$") )) && (( ${FOUND} > 0 )); then
 fi
 
 if [[ ! -z "${OUTPUT}" ]]; then
-    mv "${TMP_FILE}" "${OUTPUT}"
+    mv "${TMP_FILE}" "${OUTPUT}" 2>/dev/null
 fi
 
 # FLUSH TMP DIRECTORY
-rm -r "${TMP_PATH}"
+rm -r "${TMP_PATH}" 2>/dev/null
 
 echo "[DURATION] $(( $(date +%s) - ${START_TIME} )) seconds"
