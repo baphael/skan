@@ -66,6 +66,7 @@ Optional arguments:
     -3, --ping, --icmp      Extended ICMP scan. Includes hosts with L3 ICMP echo response (ping).
     -r, --refused           Include "connection refused" status in extended ports scan.
                             Default kept statuses are "succeeded", "version mismatch" and "permission denied".
+                            Discouraged if scanning a subnet matching your current broadcast domain !
     -o, --output FILE       Output file.
     -i, --identity FILE     Path to private key for SSH connections.
     -h, --help              Display this help message and exit.
@@ -280,7 +281,7 @@ done
 
 # SORT ASCENNDING
 FILES=($(find "${TMP_PATH%/}" -maxdepth 1 -type f ! -empty 2>/dev/null | sort -V))
-cat "${FILES[@]}" 2>/dev/null
+if (( ${#FILES[@]} )); then cat "${FILES[@]}" 2>/dev/null; fi
 
 if (( ${EXTENDED} )); then
     COUNT=0
@@ -376,7 +377,9 @@ fi
 
 # CONCAT ALL RESULTS IN ASCENDING VERSION ORDER
 FILES=($(find "${TMP_PATH%/}" -maxdepth 1 -type f ! -empty 2>/dev/null | sort -V))
-cat <(echo hostname,@IP,listening ports) "${FILES[@]}" > "${TMP_FILE}" 2>/dev/null
+if (( ${#FILES[@]} )); then
+    cat <(echo hostname,@IP,listening ports) "${FILES[@]}" > "${TMP_FILE}" 2>/dev/null
+fi
 echo
 
 FOUND=$(wc -l "${TMP_FILE}" 2>/dev/null | cut -d' ' -f1)
