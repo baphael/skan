@@ -19,7 +19,7 @@ Description:
     Asynchronous subnet scanner.
 
 Usage:
-    "${SELF}" [-t|--timeout SECONDS] [-p|--port PORT] [-u|--user USERNAME] [-i|--identity FILE] [-e|--extended PORTS] [-r|--refused] [-3|--ping|--icmp] [-o|--output FILE] [-f|--fast] [-s|--slow] [-v|--verbose] [-vv|--super-verbose] [-vvv --turbo-verbose] [-h|--help] CIDR
+    "${SELF}" [-t|--timeout SECONDS] [-p|--port PORT] [-u|--user USERNAME] [-i|--identity FILE] [-e|--extended PORTS] [-r|--refused] [-3|--ping|--icmp] [-oc|--output-csv FILE] [-oi|--output-ini FILE] [-f|--fast] [-s|--slow] [-v|--verbose] [-vv|--super-verbose] [-vvv --turbo-verbose] [-h|--help] CIDR
     Press ^C [CTRL+c] to stop
 
 Mandatory argument:
@@ -45,7 +45,8 @@ Optional arguments:
     -3, --ping, --icmp      Extended ICMP scan. Includes hosts with L3 ICMP echo response (ping).
 
     Miscellaneous
-    -o, --output FILE       Output file.
+    -oc, --output-csv FILE  Output CSV-formatted file.
+    -oi, --output-ini FILE  Output INI-formatted Ansible inventory file. 
 
     -f, --fast              Increase parallel threads limit. Warning, it may cause CPU overload !
     -s, --slow              Decrease parallel threads limit. Scans will be slower, but CPU load should stay quite low.
@@ -60,7 +61,7 @@ Examples:
     ./${SELF} -u jdoe 192.168.0.0/24        Scan addresses from 192.168.0.0 to 192.168.0.255 using the standard SSH key-based method with remote user "jdoe".
     ./${SELF} -3 -e 22-25 -e 80,443 192.168.0.0/24  Runs a much deeper scan with ports 22, 23, 24, 25, 80, 443 and ICMP (ping).
     ./${SELF} -t 2 192.168.0.0/24           Basic SSH key-based scan with a ssh connection timeout of 2s.
-    ./${SELF} -o scan.csv 192.168.0.0/24    Same, prints results in both STDOUT and "scan.csv".
+    ./${SELF} -oc scan.csv 192.168.0.0/24   Same, prints results in both STDOUT and "scan.csv".
 
 Notes :
     Standard scan retrieves hostname, IP addresses and listening ports (TCP/UDP) but requires SSH key-based access.

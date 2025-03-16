@@ -103,7 +103,7 @@ Description:
     Asynchronous subnet scanner.
 
 Usage:
-    "${SELF}" [-t|--timeout SECONDS] [-p|--port PORT] [-u|--user USERNAME] [-i|--identity FILE] [-e|--extended PORTS] [-r|--refused] [-3|--ping|--icmp] [-o|--output FILE] [-f|--fast] [-s|--slow] [-v|--verbose] [-vv|--super-verbose] [-vvv --turbo-verbose] [-h|--help] CIDR
+    "${SELF}" [-t|--timeout SECONDS] [-p|--port PORT] [-u|--user USERNAME] [-i|--identity FILE] [-e|--extended PORTS] [-r|--refused] [-3|--ping|--icmp] [-oc|--output-csv FILE] [-oi|--output-ini FILE] [-f|--fast] [-s|--slow] [-v|--verbose] [-vv|--super-verbose] [-vvv --turbo-verbose] [-h|--help] CIDR
     Press ^C [CTRL+c] to stop
 
 Mandatory argument:
@@ -129,7 +129,8 @@ Optional arguments:
     -3, --ping, --icmp      Extended ICMP scan. Includes hosts with L3 ICMP echo response (ping).
 
     Miscellaneous
-    -o, --output FILE       Output file.
+    -oc, --output-csv FILE  Output CSV-formatted file.
+    -oi, --output-ini FILE  Output INI-formatted Ansible inventory file. 
 
     -f, --fast              Increase parallel threads limit. Warning, it may cause CPU overload !
     -s, --slow              Decrease parallel threads limit. Scans will be slower, but CPU load should stay quite low.
@@ -144,7 +145,7 @@ Examples:
     ./${SELF} -u jdoe 192.168.0.0/24        Scan addresses from 192.168.0.0 to 192.168.0.255 using the standard SSH key-based method with remote user "jdoe".
     ./${SELF} -3 -e 22-25 -e 80,443 192.168.0.0/24  Runs a much deeper scan with ports 22, 23, 24, 25, 80, 443 and ICMP (ping).
     ./${SELF} -t 2 192.168.0.0/24           Basic SSH key-based scan with a ssh connection timeout of 2s.
-    ./${SELF} -o scan.csv 192.168.0.0/24    Same, prints results in both STDOUT and "scan.csv".
+    ./${SELF} -oc scan.csv 192.168.0.0/24   Same, prints results in both STDOUT and "scan.csv".
 
 Notes :
     Standard scan retrieves hostname, IP addresses and listening ports (TCP/UDP) but requires SSH key-based access.
@@ -161,7 +162,9 @@ PORTS=()
 USER=$(id -un)
 EXTENDED=""
 PING=""
-OUTPUT=""
+OUTPUT_CSV=""
+OUTPUT_INI=""
+OUTPUT=()
 VERBOSE=""
 SUPER_VERBOSE=""
 TURBO_VERBOSE=""
@@ -198,7 +201,7 @@ while (( $# )); do
             shift
             shift
             ;;
-        -o|--output)
+        -oc|--output-csv|-oi|--output-ini)
             if [[ -s "${2}" ]]; then
                 echo "File ${2} already exists. Overwrite [1|2] ? "
                 select ans in yes no; do
@@ -213,7 +216,12 @@ while (( $# )); do
                     esac
                 done
             fi
-            OUTPUT="${2}"
+            if (( $(echo "${1}" | grep -cP "^(\-oc|--output-csv)$") )); then
+                OUTPUT_CSV="${2}"
+            elif (( $(echo "${1}" | grep -cP "^(\-oi|--output-ini)$") )); then
+                OUTPUT_INI="${2}"
+            fi
+            OUTPUT+=( "${2}" )
             shift
             shift
             ;;
@@ -337,7 +345,7 @@ while (( $# )); do
             exit 5
             ;;
         *)
-            if (( ! $(echo "${1}" | grep -cP ${CIDR_PATTERN}) )) || [[ ! -z ${CIDR} ]]; then
+            if (( ! $(echo "${1}" | grep -cP ${CIDR_PATTERN}) )) || [[ -n ${CIDR} ]]; then
                 echo KO
                 echo "This script takes only one positional argument of the form X.X.X.X/X"
                 usage
@@ -382,18 +390,22 @@ if (( ${VERBOSE} )); then
     fi
     if (( ${PING} )); then echo -e "\t- extended ICMP scan"; fi
     echo "Timeout : ${TIMEOUT} second(s)"
-    if [[ ! -z "${PRIVATE_KEY}" ]]; then echo "Custom private key : ${PRIVATE_KEY}"; fi
-    if [[ ! -z "${OUTPUT}" ]]; then echo "Output file : ${OUTPUT}"; fi
+    if [[ -n "${PRIVATE_KEY}" ]]; then echo "Custom private key : ${PRIVATE_KEY}"; fi
+    if (( ${#OUTPUT[@]} )); then echo "Output file(s) : ${OUTPUT[*]}"; fi
     echo "Temporary path : ${TMP_PATH}"
     echo "Temporary file : ${TMP_FILE}"
     echo "Maximum parallel thread(s) : ${MAX_THREADS}"
     echo "Maximum parallel \"sub-thread(s)\" per thread : ${MAX_SUBTHREADS}"
+    if (( ${MAX_THREADS} < 16 || ${MAX_SUBTHREADS} < 4 )); then
+        echo "[WARNING] MAX_THREADS=${MAX_THREADS} MAX_SUBTHREADS=${MAX_SUBTHREADS} might be slow !"
+        echo
+    fi
     echo
 fi
 
 ETA_SSH=0
 ETA_EXT=0
-ETA_ICMP=0
+ETA_PING=0
 ETA_SSH=$(( 2 *  ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
 if (( ${VERBOSE} )); then echo "Key-base SSH scan ETA : ${ETA_SSH} second(s)"; fi
 
@@ -402,20 +414,15 @@ if (( ${EXTENDED} )); then
     if (( ${VERBOSE} )); then echo "Extended ports scan ETA : ${ETA_EXT} second(s)"; fi
 fi
 
-if (( ${ICMP} )); then
-    ETA_ICMP=$(( 2 * ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
-    if (( ${VERBOSE} )); then echo "ICMP scan ETA : ${ETA_ICMP} second(s)"; fi
+if (( ${PING} )); then
+    ETA_PING=$(( 2 * ${N_HOSTS} * ${TIMEOUT} / ${MAX_THREADS} ))
+    if (( ${VERBOSE} )); then echo "ICMP scan ETA : ${ETA_PING} second(s)"; fi
 fi
 
-ETA=$(( ${ETA_SSH} + ${ETA_EXT} + ${ETA_ICMP} ))
+ETA=$(( ${ETA_SSH} + ${ETA_EXT} + ${ETA_PING} ))
 
 echo "ETA : ${ETA} second(s)"
 echo
-
-if (( ${MAX_THREADS} < 16 || ${MAX_SUBTHREADS} < 4 )); then
-    echo "[WARNING] MAX_THREADS=${MAX_THREADS} MAX_SUBTHREADS=${MAX_SUBTHREADS} might be slow !"
-    echo
-fi
 
 START_TIME=$(date +%s)
 
@@ -595,8 +602,39 @@ if (( $(echo "${FOUND}" | grep -Pc "^\d+$") )) && (( ${FOUND} > 0 )); then
     echo
 fi
 
-if [[ ! -z "${OUTPUT}" ]]; then
-    mv "${TMP_FILE}" "${OUTPUT}" 2>/dev/null
+if [[ -n "${OUTPUT_INI}" ]] && (( FOUND )); then
+    echo -n "[${CIDR}]" | tr -c "[][:alnum:]" "_" >"${OUTPUT_INI}"
+    echo >>"${OUTPUT_INI}"
+
+    INI_COUNT=0
+    # Iterate over CSV file
+    tail +2 "${TMP_FILE}" 2>/dev/null | while IFS= read -r host; do
+        # Parse each line
+        INI_COUNT=$(( INI_COUNT+1 ))
+        INI_HOSTNAME="$(echo "${host}" | cut -d, -f1)"
+
+        # Ensure we keep only the IP address matching the scanned subnet
+        IPS=$(echo "${host}" | cut -d, -f2)
+        IFS=, read -ra IPS_ARRAY <<< "${IPS}"
+        INDEX_IP=0
+        while ! (( $(echo "${RANGE[*]}" | grep -cw "$(echo "${IPS_ARRAY[${INDEX_IP}]}")") && INDEX_IP < ${#IPS_ARRAY[@]} )); do
+            INDEX_IP=$(( INDEX_IP+1 ))
+        done
+        INI_IP=${IPS_ARRAY[${INDEX_IP}]}
+
+        # Rewrite each line in INI Ansible inventory format 
+        echo "${INI_COUNT}-${INI_HOSTNAME} ansible_host=${INI_IP}" 2>/dev/null >>"${OUTPUT_INI}"
+    done
+fi
+
+if [[ -n "${OUTPUT_CSV}" ]] && (( FOUND )); then
+    mv "${TMP_FILE}" "${OUTPUT_CSV}" 2>/dev/null
+fi
+
+if ! (( FOUND )); then
+    for output_file in ${OUTPUT[@]}; do
+        rm -f "${output_file}" 2>/dev/null
+    done
 fi
 
 # FLUSH TMP DIRECTORY
