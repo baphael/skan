@@ -695,7 +695,8 @@ if [[ -n "${OUTPUT_INI}" ]] && (( FOUND )); then
             INDEX_IP=$(( INDEX_IP+1 ))
         done
         if (( $(echo "${RANGE[*]}" | grep -cw "${IPS_ARRAY[${INDEX_IP}]}") )); then
-            INI_IP=${IPS_ARRAY[${INDEX_IP}]}
+            # Somehow, IPS_ARRAY elements can have a double trailing \n...
+            INI_IP=$(echo "${IPS_ARRAY[${INDEX_IP}]}" | tr -s "\n")
         else
             echo_error "IP not found for host ${INI_HOSTNAME:-#${INI_COUNT}}"
         fi
