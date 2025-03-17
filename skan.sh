@@ -256,7 +256,7 @@ while (( $# )); do
                 if ! (( IGNORED )); then mapfile -t -O "${#PORTS[@]}" PORTS < <(seq "${port_range_lower_bound}" "${port_range_upper_bound}"); fi
                 IGNORED=0
             elif (( $(echo "${2}" | grep -Pc "^(\d+,)+\d+$") )); then
-                mapfile -t -d" " ports_list < <(echo "${2}" | tr -s "," " ")
+                mapfile -t -d, ports_list < <(echo "${2}")
                 for port in "${ports_list[@]}"; do
                     if (( port > 0 && port < 65536 )); then
                         PORTS+=( "${port}" )
@@ -681,12 +681,15 @@ if [[ -n "${OUTPUT_INI}" ]] && (( FOUND )); then
     # Iterate over CSV file
     mapfile -t LINES < <(tail +2 "${TMP_FILE}" 2>/dev/null)
     for host in "${LINES[@]}"; do
+        INI_HOSTNAME=""
+        INI_IP=""
+
         # Parse each line
         INI_COUNT=$(( INI_COUNT+1 ))
         INI_HOSTNAME="$(echo "${host}" | cut -d, -f1)"
 
         # Ensure we keep only the IP address matching the scanned subnet
-        mapfile -t IPS_ARRAY < <(echo "${host}" | cut -d, -f2)
+        mapfile -t -d" " IPS_ARRAY < <(echo "${host}" | cut -d, -f2)
         INDEX_IP=0
         while ! (( $(echo "${RANGE[*]}" | grep -cw "${IPS_ARRAY[${INDEX_IP}]}") )) && (( INDEX_IP < ${#IPS_ARRAY[@]} )); do
             INDEX_IP=$(( INDEX_IP+1 ))
